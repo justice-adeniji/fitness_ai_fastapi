@@ -13,17 +13,37 @@ from langchain.docstore.document import Document
 from pydantic import BaseModel
 
 
+
+
 ## Loading data
 
-df = pd.read_csv('exercises.csv')
+df = pd.read_csv("exercises.csv").fillna("")
 # print(df.head(10))
+
+
+
+documents = []
+
+instruction_cols = [col for col in df.columns if col.startswith("instructions/")]
+secondary_muscles_cols = [col for col in df.columns if col.startswith("secondaryMuscles/")]
 
 documents = []
 
 for _, row in df.iterrows():
-    metadata = row.to_dict()
-    content = " ".join(str(value) for value in row.values if pd.notnull(value))
-    documents.append(Document(page_content=content, metadata=metadata))
+    instructions = [str(row[col]) for col in instruction_cols if pd.notna(row[col])]
+    secondary_muscles = [str(row[col]) for col in secondary_muscles_cols if pd.notna(row[col])]
+    
+    content = f"""
+            Exercise: {row['exercise_name']}
+            Muscle Group: {row['muscle_group']}
+            Equipment: {row['equipment']}
+            Secondary Muscles: {', '.join(secondary_muscles) if secondary_muscles else 'None'}
+            Instructions: {' '.join(instructions) if instructions else 'No instructions available'}
+            """
+    documents.append(Document(page_content=content.strip(), metadata=row.to_dict()))
+
+
+
     #print(content)
     
 ## Embeddings and Vector Store
@@ -32,10 +52,10 @@ vector_store = FAISS.from_documents(documents, embedder)
 
 
 ## Large Language Model
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", api_key="AIzaSyDGZrDUj0MP6kOtlfe0L6yx9AbYUIp6XpY")
+llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-pro", api_key="AIzaSyDn3x1eLz0IPUwJmTuJ0kjDEpk7q_YQ9j4")
 
 ## Memory
-memory = ConversationBufferMemory(memory_key="all_chats", return_messages=True)
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
 ## Agent Role Prompt
 
@@ -43,18 +63,18 @@ PERSONALITY_PROMPT = """
 You are a fitness expert and personal trainer. You have extensive knowledge of exercise science, anatomy, and nutrition. Your goal is to help users achieve their fitness goals by providing personalized exercise recommendations, workout plans, and nutritional advice. You are friendly, supportive, and motivational. You always encourage users to stay consistent with their fitness routines and make healthy lifestyle choices.
 Answer only question from the database. If the question is not related to the database, respond by telling the user that you are not able to answer the question.
 
-Chat History: {all_chats}
+Chat History: {chat_history}
 
 Context:
 {context}
 
 user: {question}
 
-fitness expert:""
+fitness expert:
 
 """
 
-prompt_template = PromptTemplate(template =PERSONALITY_PROMPT, input_variables=["all_chats", "question", "context"])
+prompt_template = PromptTemplate(template =PERSONALITY_PROMPT, input_variables=["chat_history", "question", "context"])
 
 ## Conversational Retrieval Chain
 
@@ -68,17 +88,36 @@ chat_assistant = ConversationalRetrievalChain.from_llm(
 ##FastAPI response transmission
 
 
+##FastAPI response transmission
+
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # or restrict to specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class ChatRequest(BaseModel):
     question: str
 
 @app.post("/chat")
 def chat(req: ChatRequest):
-    response = chat_assistant.invoke({"question": req.question})
-    return {
-        "question": req.question,
-        "answer": response["answer"],
+    try:
+        response = chat_assistant.invoke({"question": req.question})
+        print("Raw response:", response)   # so you can see what keys exist
+        return {
+            "question": req.question,
+            "answer": response.get("answer") or response.get("result") or response
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
 
-    }
+
